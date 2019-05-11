@@ -110,6 +110,7 @@ async def create(ctx, time, team_size):
 
 @bot.command(description="Lists all scrims scheduled, or scrims scheduled for a day if a date is passed.", help="Works "
         "with or without an argument. Without an argument, lists all scrims schedule from present time; scrims scheduled for that day are listed")
+
 async def list(ctx, time_string=None):
     creator = ctx.author
 
