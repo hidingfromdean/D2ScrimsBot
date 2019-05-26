@@ -344,7 +344,7 @@ async def start(ctx, scrim_id):
     creator = ctx.author
 
     # Get the scrim ID
-    c.execute('''SELECT id, team_size, creator
+    c.execute('''SELECT id, team_size, creator, alpha, bravo
                    FROM Scrims
                   WHERE id = ?;''', (scrim_id,))
     try:
@@ -410,7 +410,7 @@ async def start(ctx, scrim_id):
 
     embed.add_field(name='Alpha Team: ', value=alpha_team, inline=True)
     embed.add_field(name='Bravo Team: ', value=bravo_team, inline=True)
-    embed.add_field(name='Score: ', value='Alpha 0 - 0 Bravo', inline=False)
+    embed.add_field(name='Score: ', value='Alpha {} - {} Bravo'.format(scrim_row[-2], scrim_row[-1]), inline=False)
 
     message = await ctx.send(content=None, embed=embed)
 
