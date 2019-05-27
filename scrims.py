@@ -7,20 +7,22 @@ import traceback
 import random
 import time
 import re
+import math
 
-sys.path.append('util/')
+sys.path.append('util')
 
 from discord.ext import commands
-from secrets import *
-from util import *
+from secrets import token, headers
+from util import maps_dict, modes_dict
 from datetime import datetime, timedelta
-
+from statistics import mean
 from string_to_datetime import string_to_datetime
 from string_to_date import string_to_date
 
 conn     = sqlite3.connect("scrims.db")
 c        = conn.cursor()
 base_url = 'https://www.bungie.net/Platform'
+k_value  = 15
 
 description = 'A bot for the creation of D2 scrims'
 bot         = commands.Bot(command_prefix='?', description=description)
@@ -35,6 +37,7 @@ async def on_ready():
                 creator INTEGER,
                 alpha INTEGER DEFAULT 0,
                 bravo INTEGER DEFAULT 0,
+                started BOOLEAN DEFAULT False,
                 FOREIGN KEY(creator) REFERENCES Players(id)
             );''')
     c.execute('''CREATE TABLE IF NOT EXISTS ScrimPlayers
@@ -42,6 +45,7 @@ async def on_ready():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 player_id INTEGER,
                 scrim_id INTEGER,
+                team INTEGER,
                 FOREIGN KEY(scrim_id) REFERENCES Scrims(id),
                 FOREIGN KEY(player_id) REFERENCES Players(id)
             );''')
@@ -115,7 +119,7 @@ async def create(ctx, time, team_size):
 @bot.command(description="Lists all scrims scheduled, or scrims scheduled for a day if a date is passed.", help="Works "
         "with or without an argument. Without an argument, lists all scrims schedule from present time; scrims scheduled for that day are listed")
 
-async def list(ctx, time_string=None):
+async def scrims(ctx, time_string=None):
     creator = ctx.author
 
     # check if time_string given. If so, parse time.
@@ -344,7 +348,7 @@ async def start(ctx, scrim_id):
     creator = ctx.author
 
     # Get the scrim ID
-    c.execute('''SELECT id, team_size, creator, alpha, bravo
+    c.execute('''SELECT id, team_size, creator, alpha, bravo, started
                    FROM Scrims
                   WHERE id = ?;''', (scrim_id,))
     try:
@@ -354,6 +358,12 @@ async def start(ctx, scrim_id):
         return
 
     team_size = scrim_row[1]
+    started = scrim_row[5]
+
+    if(started):
+        await ctx.send('This scrim has already started. Create a new one with `?create`.')
+        return
+
 
     # How many people are already registered for this scrim?
     c.execute('''SELECT Count(*)
@@ -365,6 +375,13 @@ async def start(ctx, scrim_id):
     if player_count != (team_size * 2):
         await ctx.send('This scrim is not full. More people need to join with `?join`.')
         return
+
+    # Start the scrim officially
+    # Disable this if you are testing
+    c.execute('''UPDATE Scrims
+                    SET started = True
+                  WHERE id = ?''', (scrim_id,))
+    conn.commit()
 
     # Embed creation
     title = 'Scrim ' + str(scrim_id) + ' beginning now'
@@ -383,16 +400,29 @@ async def start(ctx, scrim_id):
     embed.add_field(name='Creator: ', value=creatorname, inline=False)
 
     # Player Iteration
-    c.execute('''SELECT sp.player_id, p.psn_name
+    c.execute('''SELECT sp.player_id, p.psn_name, p.elo
                    FROM ScrimPlayers sp
                    JOIN Players p ON p.id = sp.player_id
-                  WHERE sp.scrim_id = ?;''', (scrim_id,))
+                  WHERE sp.scrim_id = ?
+               ORDER BY p.elo DESC;''', (scrim_id,))
 
     player_row = c.fetchall()
 
-    random.shuffle(player_row)
-    alpha = player_row[:(team_size)]
-    bravo = player_row[(team_size):]
+    # Grabs every other person in order of elo. Updates the ScrimPlayers afterwards to allow for proper scorekeeping afterwards.
+    alpha = player_row[::2]
+    bravo = player_row[1::2]
+
+    alpha_ids = [x[0] for x in alpha]
+    bravo_ids = [x[0] for x in bravo]
+
+    for player in alpha_ids:
+        c.execute('''UPDATE ScrimPlayers
+                        SET team = 1
+                      WHERE player_id = ?;''', (player,))
+    for player in bravo_ids:
+        c.execute('''UPDATE ScrimPlayers
+                        SET team = 2
+                      WHERE player_id = ?;''', (player,))
 
     counter = 1
     alpha_team = ""
@@ -419,6 +449,61 @@ async def start(ctx, scrim_id):
     # Adds the scorekeeping reactions
     for emoji in emojis:
         await message.add_reaction(emoji)
+
+
+@bot.command(description='Lists out the rankings of all active players.', help='Fairly self explanatory.')
+async def ranking(ctx):
+    # We don't care about players that have registered but not played.
+    # We also only want the top 25.
+    c.execute('''SELECT p.elo, p.psn_name
+                   FROM Players p
+                  WHERE p.elo != 1500
+               ORDER BY p.elo DESC
+                  LIMIT 25;''')
+    player_rows = c.fetchall()
+
+    title = 'Scrim Player ELO Rankings'
+    color = 0xFFFFFF
+    desc  = "Top 25 players in order of ranking. Players who have not played yet are hidden."
+    embed = discord.Embed(title=title, description=desc, color=color)
+
+    counter = 1
+    rankings = ""
+    for player in player_rows:
+        player_rank = "%d. (%s) %s\n" % (counter, player[0], player[1])
+        rankings = rankings + player_rank
+        counter = counter + 1
+
+    embed.add_field(name='Rankings: ', value=rankings, inline=True)
+
+    await ctx.send(content=None, embed=embed)
+
+
+@bot.command(description='Registers your PSN with your Discord', help="Takes your psn name as the psn argument.")
+async def register(ctx, psn):
+    creator = ctx.author
+
+    # Get user id by PSN
+    search_user = '/Destiny2/SearchDestinyPlayer/2/' + psn + '/'
+    r           = json.loads(requests.get(base_url + search_user, headers = headers).content)
+
+    d2_membership_id = r['Response'][0]['membershipId']
+
+    # Saves the ID's in the database to speed up the query
+    c.execute('''REPLACE INTO Players (psn_name, discord_name, membership_id)
+                       VALUES (?, ?, ?);''', (psn, str(creator), d2_membership_id))
+    player_id = c.lastrowid
+
+    await ctx.send('`Registered %s with the PSN as %s. If this was done in error use ?register again.`' % (creator, psn))
+
+    profile   = '/Destiny2/2/Profile/' + d2_membership_id + '/?components=100'
+    r         = json.loads(requests.get(base_url + profile, headers = headers).content)
+    characters = r['Response']['profile']['data']['characterIds']
+
+    for character in characters:
+        c.execute('''REPLACE INTO PlayerCharacters (player_id, character_id)
+                           VALUES (?, ?);''', (player_id, character))
+    conn.commit()
 
 
 @bot.event
@@ -478,8 +563,56 @@ async def on_reaction_add(reaction, user):
 
         # If a team wins the scrim, updates the team elo's
         if(winner):
-            # TO-DO: ELO update happens here
-            print(winner + ' has won the scrim.')
+            # First get all of the ELOs
+            c.execute('''SELECT p.id, p.psn_name, p.elo
+                        FROM ScrimPlayers sp
+                        JOIN Players p ON p.id = sp.player_id
+                        WHERE sp.scrim_id = ?
+                          AND team = 1
+                    ORDER BY p.elo DESC;''', (scrim_id,))
+            alpha_row = c.fetchall()
+            c.execute('''SELECT p.id, p.psn_name, p.elo
+                        FROM ScrimPlayers sp
+                        JOIN Players p ON p.id = sp.player_id
+                        WHERE sp.scrim_id = ?
+                          AND team = 2
+                    ORDER BY p.elo DESC;''', (scrim_id,))
+            bravo_row = c.fetchall()
+
+            rating_alpha = mean([x[2] for x in alpha_row])
+            rating_bravo = mean([x[2] for x in bravo_row])
+
+            # This is the expected odds of winning for each team
+            expected_alpha = 1 / ( 1 + 10**( ( rating_bravo - rating_alpha ) / 400 ) )
+            expected_bravo = 1 / ( 1 + 10**( ( rating_alpha - rating_bravo ) / 400 ) )
+
+            mov_multiplier = math.log(abs(int(alpha) - int(bravo)) + 1)
+
+            if(alpha == 3):
+                corr_coefficient = 2.2 / ((rating_alpha - rating_bravo) * 0.001 + 2.2)
+            else:
+                corr_coefficient = 2.2 / ((rating_bravo - rating_alpha) * 0.001 + 2.2)
+
+            # Calculates the modifiers
+            alpha_modifier = k_value * (alpha - expected_alpha) * mov_multiplier * corr_coefficient
+            bravo_modifier = k_value * (bravo - expected_bravo) * mov_multiplier * corr_coefficient
+
+            # Updates the ELO's for all players
+            for player in alpha_row:
+                new_elo = int(player[2] + alpha_modifier)
+                player_id = player[0]
+                c.execute('''UPDATE Players
+                                SET elo = ?
+                              WHERE id = ?;''', (new_elo,player_id))
+            conn.commit()
+            for player in bravo_row:
+                new_elo = int(player[2] + bravo_modifier)
+                player_id = player[0]
+                c.execute('''UPDATE Players
+                                SET elo = ?
+                              WHERE id = ?;''', (new_elo,player_id))
+            conn.commit()
+
         else:
             # Edit the old message
             emojis = ["{}\N{COMBINING ENCLOSING KEYCAP}".format(num) for num in range(1, 3)]
@@ -490,33 +623,6 @@ async def on_reaction_add(reaction, user):
     else:
         if(user.name+'#'+user.discriminator != 'Destiny2 Scrims Groups#8958'):
             await reaction.remove(user)
-
-
-@bot.command(description='Registers your PSN with your Discord', help="Takes your psn name as the psn argument.")
-async def register(ctx, psn):
-    creator = ctx.author
-
-    # Get user id by PSN
-    search_user = '/Destiny2/SearchDestinyPlayer/2/' + psn + '/'
-    r           = json.loads(requests.get(base_url + search_user, headers = headers).content)
-
-    d2_membership_id = r['Response'][0]['membershipId']
-
-    # Saves the ID's in the database to speed up the query
-    c.execute('''REPLACE INTO Players (psn_name, discord_name, membership_id)
-                       VALUES (?, ?, ?);''', (psn, str(creator), d2_membership_id))
-    player_id = c.lastrowid
-
-    await ctx.send('`Registered %s with the PSN as %s. If this was done in error use ?register again.`' % (creator, psn))
-
-    profile   = '/Destiny2/2/Profile/' + d2_membership_id + '/?components=100'
-    r         = json.loads(requests.get(base_url + profile, headers = headers).content)
-    characters = r['Response']['profile']['data']['characterIds']
-
-    for character in characters:
-        c.execute('''REPLACE INTO PlayerCharacters (player_id, character_id)
-                           VALUES (?, ?);''', (player_id, character))
-    conn.commit()
 
 
 @bot.event
