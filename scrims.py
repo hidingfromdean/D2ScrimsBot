@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import discord
 import json
@@ -9,10 +10,9 @@ import time
 import re
 import math
 
-sys.path.append('util')
+sys.path.append('util/')
 
 from discord.ext import commands
-from secrets import token, headers
 from util import maps_dict, modes_dict
 from datetime import datetime, timedelta
 from statistics import mean
@@ -26,6 +26,11 @@ k_value  = 15
 
 description = 'A bot for the creation of D2 scrims'
 bot         = commands.Bot(command_prefix='?', description=description)
+
+from secrets import token, bungie_key
+# token = os.environ['TOKEN']
+# bungie_key = os.environ['BUNGIE_KEY']
+headers = {'X-API-Key' : bungie_key}
 
 @bot.event
 async def on_ready():
@@ -65,9 +70,12 @@ async def on_ready():
             );''')
     conn.commit()
 
+    print('Bot is ready and live')
+
 
 @bot.command(description='Creates a scrim', help="Takes your name as the host argument, put your time in double quotes. There is no validation.")
 async def create(ctx, time, team_size):
+    print('Scrim created')
     time = string_to_datetime(time)
     creator = ctx.author
     c.execute('''SELECT id, psn_name
@@ -120,6 +128,7 @@ async def create(ctx, time, team_size):
         "with or without an argument. Without an argument, lists all scrims schedule from present time; scrims scheduled for that day are listed")
 
 async def scrims(ctx, time_string=None):
+    print('Scrims listed')
     creator = ctx.author
 
     # check if time_string given. If so, parse time.
@@ -180,6 +189,7 @@ async def scrims(ctx, time_string=None):
 
 @bot.command(description="Join a scrim with a specific ID", help="Takes a scrim ID. You must be registered using `?register` first.")
 async def join(ctx, scrim_id):
+    print('Match joined')
     creator = ctx.author
 
     # Get the player ID
@@ -194,7 +204,7 @@ async def join(ctx, scrim_id):
         return
 
     # Get the scrim ID
-    c.execute('''SELECT id, team_size
+    c.execute('''SELECT id, team_size, creator
                    FROM Scrims
                   WHERE id = ?;''', (scrim_id,))
     try:
@@ -202,6 +212,11 @@ async def join(ctx, scrim_id):
     except IndexError:
         await ctx.send('This is not an active scrim id. Create one with `?create`.')
         return
+
+    if(player_id != scrim_row[2]):
+        await ctx.send('You are not the creator of this scrim. Let them start it.')
+        return
+
 
     # How many people are already registered for this scrim?
     c.execute('''SELECT Count(*)
@@ -268,6 +283,7 @@ async def join(ctx, scrim_id):
 
 @bot.command(description='Pulls the most recent private match you played. This is probably a scrim', help="This uses the API, and requires you to have used `?register`. Without it, you will get back an error message.")
 async def match(ctx):
+    print('Match requested')
     creator = ctx.author
 
     # Player Iteration
@@ -345,6 +361,7 @@ async def match(ctx):
 
 @bot.command(description='Starts a scrim. Auto creates teams.', help="If you are the creator of a scrim, randomly generates the teams and starts it.")
 async def start(ctx, scrim_id):
+    print('Scrim started')
     creator = ctx.author
 
     # Get the scrim ID
@@ -358,9 +375,9 @@ async def start(ctx, scrim_id):
         return
 
     team_size = scrim_row[1]
-    started = scrim_row[5]
+    started   = scrim_row[5]
 
-    if(started):
+    if(started == False):
         await ctx.send('This scrim has already started. Create a new one with `?create`.')
         return
 
@@ -379,7 +396,7 @@ async def start(ctx, scrim_id):
     # Start the scrim officially
     # Disable this if you are testing
     c.execute('''UPDATE Scrims
-                    SET started = True
+                    SET started = 1
                   WHERE id = ?''', (scrim_id,))
     conn.commit()
 
@@ -440,7 +457,7 @@ async def start(ctx, scrim_id):
 
     embed.add_field(name='Alpha Team: ', value=alpha_team, inline=True)
     embed.add_field(name='Bravo Team: ', value=bravo_team, inline=True)
-    embed.add_field(name='Score: ', value='Alpha {} - {} Bravo'.format(scrim_row[-2], scrim_row[-1]), inline=False)
+    embed.add_field(name='Score: ', value='Alpha {} - {} Bravo'.format(scrim_row[3], scrim_row[4]), inline=False)
 
     message = await ctx.send(content=None, embed=embed)
 
