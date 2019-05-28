@@ -19,6 +19,7 @@ from statistics import mean
 from string_to_datetime import string_to_datetime
 from string_to_date import string_to_date
 
+from map import map_name as map_name_from_key
 conn     = sqlite3.connect("scrims.db")
 c        = conn.cursor()
 base_url = 'https://www.bungie.net/Platform'
@@ -28,6 +29,10 @@ description = 'A bot for the creation of D2 scrims'
 bot         = commands.Bot(command_prefix='?', description=description)
 
 from secrets import token, bungie_key
+
+try: from secrets import bot_name
+except: bot_name = 'Destiny2 Scrims Groups#8958'
+
 # token = os.environ['TOKEN']
 # bungie_key = os.environ['BUNGIE_KEY']
 headers = {'X-API-Key' : bungie_key}
@@ -310,7 +315,7 @@ async def match(ctx):
             for match in r['Response']['activities']:
                 date     = match['period']
                 mode     = modes_dict[match['activityDetails']['mode']]
-                map_name = DestinyActivityDefinition['{}'.format(match['activityDetails']['referenceId'])]['displayProperties']['name']
+                map_name = map_name_from_key(match['activityDetails']['referenceId'])
                 instance = match['activityDetails']['instanceId']
 
                 dateobject = datetime.strptime(date, '%Y-%m-%dT%H:%M:%SZ')
@@ -644,7 +649,7 @@ async def on_reaction_add(reaction, user):
             for emoji in emojis:
                 await reaction.message.add_reaction(emoji)
     else:
-        if(user.name+'#'+user.discriminator != 'Destiny2 Scrims Groups#8958'):
+        if(user.name+'#'+user.discriminator != bot_name):
             await reaction.remove(user)
 
 
